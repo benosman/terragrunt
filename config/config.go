@@ -35,6 +35,7 @@ type TerragruntConfig struct {
 	PreventDestroy              bool
 	Skip                        bool
 	IamRole                     string
+	Globals                     map[string]interface{}
 	Inputs                      map[string]interface{}
 	Locals                      map[string]interface{}
 	TerragruntDependencies      []Dependency
@@ -55,6 +56,7 @@ type terragruntConfigFile struct {
 	TerraformBinary             *string                   `hcl:"terraform_binary,attr"`
 	TerraformVersionConstraint  *string                   `hcl:"terraform_version_constraint,attr"`
 	TerragruntVersionConstraint *string                   `hcl:"terragrunt_version_constraint,attr"`
+	Globals                     *cty.Value                `hcl:"globals,attr"`
 	Inputs                      *cty.Value                `hcl:"inputs,attr"`
 	Include                     *IncludeConfig            `hcl:"include,block"`
 	RemoteState                 *remoteStateConfigFile    `hcl:"remote_state,block"`
@@ -362,6 +364,14 @@ func ParseConfigString(configString string, terragruntOptions *options.Terragrun
 	}
 	contextExtensions.DecodedDependencies = retrievedOutputs
 
+	// Decode just the `globals` map/block
+	// process.
+	globalsAsCty, err := decodeAsGlobals(file, filename, terragruntOptions, contextExtensions)
+	if err != nil {
+		return nil, err
+	}
+	contextExtensions.Globals = globalsAsCty
+
 	// Decode the rest of the config, passing in this config's `include` block or the child's `include` block, whichever
 	// is appropriate
 	terragruntConfigFile, err := decodeAsTerragruntConfigFile(file, filename, terragruntOptions, contextExtensions)
@@ -530,6 +540,10 @@ func mergeConfigWithIncludedConfig(config *TerragruntConfig, includedConfig *Ter
 	// child's generate block will override the parent's block.
 	for key, val := range config.GenerateConfigs {
 		includedConfig.GenerateConfigs[key] = val
+	}
+
+	if config.Globals != nil {
+		includedConfig.Globals = mergeInputs(config.Globals, includedConfig.Globals)
 	}
 
 	if config.Inputs != nil {
@@ -751,6 +765,15 @@ func convertToTerragruntConfig(
 			genConfig.DisableSignature = *block.DisableSignature
 		}
 		terragruntConfig.GenerateConfigs[block.Name] = genConfig
+	}
+
+	if terragruntConfigFromFile.Globals != nil {
+		globals, err := parseCtyValueToMap(*terragruntConfigFromFile.Globals)
+		if err != nil {
+			return nil, err
+		}
+
+		terragruntConfig.Globals = globals
 	}
 
 	if terragruntConfigFromFile.Inputs != nil {

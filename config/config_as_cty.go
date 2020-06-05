@@ -76,6 +76,14 @@ func terragruntConfigAsCty(config *TerragruntConfig) (cty.Value, error) {
 		output["inputs"] = inputsCty
 	}
 
+	globalsCty, err := convertToCtyWithJson(config.Globals)
+	if err != nil {
+		return cty.NilVal, err
+	}
+	if globalsCty != cty.NilVal {
+		output["globals"] = globalsCty
+	}
+
 	localsCty, err := convertToCtyWithJson(config.Locals)
 	if err != nil {
 		return cty.NilVal, err

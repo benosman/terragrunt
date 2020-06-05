@@ -77,6 +77,11 @@ type EvalContextExtensions struct {
 	// Locals are preevaluated variable bindings that can be used by reference in the code.
 	Locals *cty.Value
 
+
+	// Globals are preevaluated variable bindings that can be used by reference in the code.
+	Globals *cty.Value
+
+
 	// DecodedDependencies are references of other terragrunt config. This contains the following attributes that map to
 	// various fields related to that config:
 	// - outputs: The map of outputs from the terraform state obtained by running `terragrunt output` on that target
@@ -131,6 +136,9 @@ func CreateTerragruntEvalContext(
 	ctx.Variables = map[string]cty.Value{}
 	if extensions.Locals != nil {
 		ctx.Variables["local"] = *extensions.Locals
+	}
+	if extensions.Globals != nil {
+		ctx.Variables["global"] = *extensions.Globals
 	}
 	if extensions.DecodedDependencies != nil {
 		ctx.Variables["dependency"] = *extensions.DecodedDependencies
