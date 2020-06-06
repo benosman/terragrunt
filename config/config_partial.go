@@ -70,6 +70,61 @@ type terragruntGlobals struct {
 	Remain       hcl.Body     `hcl:",remain"`
 }
 
+// DecodeIncludes takes in a parsed HCL2 file and decodes the include blocks. Include blocks are blocks that should always
+// be decoded even in partial decoding, because they provide bindings that are necessary for parsing any block in the
+// file. Currently base blocks are:
+// - include
+func DecodeIncludeBlocks(
+	terragruntOptions *options.TerragruntOptions,
+	parser *hclparse.Parser,
+	hclFile *hcl.File,
+	filename string,
+	includeFromChild *IncludeConfig,
+) (*terragruntInclude, *IncludeConfig, error) {
+	// Decode just the `include` block, and verify that it's allowed here
+	terragruntInclude, err := decodeAsTerragruntInclude(
+		hclFile,
+		filename,
+		terragruntOptions,
+		EvalContextExtensions{},
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	includeForDecode, err := getIncludedConfigForDecode(terragruntInclude, terragruntOptions, includeFromChild)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return terragruntInclude, includeForDecode, nil
+}
+
+// DecodeVariableBlocks takes in a parsed HCL2 file and decodes the variable blocks. Variable blocks are blocks that should always
+// be decoded even in partial decoding, because they provide bindings that are necessary for parsing any block in the
+// file. Currently variable blocks are:
+// - locals
+// - globals
+func DecodeVariableBlocks(
+	terragruntOptions *options.TerragruntOptions,
+	parser *hclparse.Parser,
+	hclFile *hcl.File,
+	filename string,
+	includeFromChild *IncludeConfig,
+) (*cty.Value, error) {
+	// Evaluate all the expressions in the locals block separately and generate the variables list to use in the
+	// evaluation context.
+	locals, err := evaluateLocalsBlock(terragruntOptions, parser, hclFile, filename, includeFromChild)
+	if err != nil {
+		return nil, err
+	}
+	localsAsCty, err := convertValuesMapToCtyVal(locals)
+	if err != nil {
+		return nil, err
+	}
+
+	return &localsAsCty, nil
+}
+
 // DecodeBaseBlocks takes in a parsed HCL2 file and decodes the base blocks. Base blocks are blocks that should always
 // be decoded even in partial decoding, because they provide bindings that are necessary for parsing any block in the
 // file. Currently base blocks are:
@@ -158,8 +213,14 @@ func PartialParseConfigString(
 		return nil, err
 	}
 
-	// Decode just the Base blocks. See the function docs for DecodeBaseBlocks for more info on what base blocks are.
-	localsAsCty, terragruntInclude, includeForDecode, err := DecodeBaseBlocks(terragruntOptions, parser, file, filename, includeFromChild)
+	// Decode just the Include blocks. See the function docs for DecodeIncludeBlocks for more info.
+	terragruntInclude, includeForDecode, err := DecodeIncludeBlocks(terragruntOptions, parser, file, filename, includeFromChild)
+	if err != nil {
+		return nil, err
+	}
+
+	// Decode just the variable blocks. See the function docs for DecodeVariableBlocks for more info on what variable blocks are.
+	localsAsCty, err := DecodeVariableBlocks(terragruntOptions, parser, file, filename, includeForDecode)
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +228,6 @@ func PartialParseConfigString(
 	// Initialize evaluation context extensions from base blocks.
 	contextExtensions := EvalContextExtensions{
 		Locals:  localsAsCty,
-		Globals: localsAsCty,
 		Include: includeForDecode,
 	}
 

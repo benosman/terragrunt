@@ -344,8 +344,14 @@ func ParseConfigString(configString string, terragruntOptions *options.Terragrun
 		return nil, err
 	}
 
-	// Decode just the Base blocks. See the function docs for DecodeBaseBlocks for more info on what base blocks are.
-	localsAsCty, terragruntInclude, includeForDecode, err := DecodeBaseBlocks(terragruntOptions, parser, file, filename, includeFromChild)
+	// Decode just the Include blocks. See the function docs for DecodeIncludeBlocks for more info.
+	terragruntInclude, includeForDecode, err := DecodeIncludeBlocks(terragruntOptions, parser, file, filename, includeFromChild)
+	if err != nil {
+		return nil, err
+	}
+
+	// Decode just the variable blocks. See the function docs for DecodeVariableBlocks for more info on what variable blocks are.
+	localsAsCty, err := DecodeVariableBlocks(terragruntOptions, parser, file, filename, includeForDecode)
 	if err != nil {
 		return nil, err
 	}
