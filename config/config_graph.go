@@ -97,12 +97,11 @@ func newConfigEvaluator(configFile *hcl.File, configPath string, globals evaluat
 //     a. Verify that there are no globals that are empty.
 // 10. Evaluate everything, skipping things that were evaluated in (5)
 func ParseConfigVariables(
-	terragruntOptions *options.TerragruntOptions,
-	preparse *TerragruntPreparseResult,
+	configParser *ConfigParser,
 ) (*EvaluationResult, *EvaluationResult, error) {
 	globals := evaluatorGlobals{
-		options:  terragruntOptions,
-		parser:   preparse.Parser,
+		options:  configParser.Options,
+		parser:   configParser.Parser,
 		graph:    dag.AcyclicGraph{},
 		root:     rootVertex{},
 		vertices: map[string]variableVertex{},
@@ -112,7 +111,7 @@ func ParseConfigVariables(
 	// Add root of graph
 	globals.graph.Add(globals.root)
 
-	child := *newConfigEvaluator(preparse.File, preparse.Filename, globals)
+	child := *newConfigEvaluator(configParser.File, configParser.Filename, globals)
 	var childResult *EvaluationResult = nil
 
 	// 1, 2, 3, 4
@@ -130,9 +129,9 @@ func ParseConfigVariables(
 	var parent *configEvaluator = nil
 	var parentResult *EvaluationResult = nil
 
-	if preparse.Parent != nil {
+	if configParser.Parent != nil {
 		// 6, 7, 8, 9
-		parent = newConfigEvaluator(preparse.Parent.File, preparse.Parent.Filename, globals)
+		parent = newConfigEvaluator(configParser.Parent.File, configParser.Parent.Filename, globals)
 		err = (*parent).decodeConfig()
 		if err != nil {
 			return nil, nil, err

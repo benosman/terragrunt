@@ -70,7 +70,7 @@ type terragruntConfigFile struct {
 	// This struct is used for validating and parsing the entire terragrunt config. Since locals are evaluated in a
 	// completely separate cycle, it should not be evaluated here. Otherwise, we can't support self referencing other
 	// elements in the same block.
-	Locals *terragruntLocal `hcl:"locals,block"`
+	Locals  *terragruntLocal  `hcl:"locals,block"`
 	Globals *terragruntGlobal `hcl:"globals,block"`
 }
 
@@ -203,12 +203,12 @@ func (conf *TerraformConfig) ValidateHooks() error {
 }
 
 type TerragruntPreparseResult struct {
-	File           *hcl.File
-	Filename       string
-	Include        *terragruntInclude
-	IncludeConfig  *IncludeConfig
-	Parent         *TerragruntPreparseResult
-	Parser         *hclparse.Parser
+	File          *hcl.File
+	Filename      string
+	Include       *terragruntInclude
+	IncludeConfig *IncludeConfig
+	Parent        *TerragruntPreparseResult
+	Parser        *hclparse.Parser
 }
 
 // TerraformExtraArguments sets a list of arguments to pass to Terraform if command fits any in the `Commands` list
@@ -336,7 +336,6 @@ func ReadConfigFile(filename string) (string, error) {
 	return configString, err
 }
 
-
 func PreparseConfig(configString string, terragruntOptions *options.TerragruntOptions, includeFromChild *IncludeConfig, filename string) (*TerragruntPreparseResult, error) {
 	// Parse the HCL string into an AST body that can be decoded multiple times later without having to re-parse
 	parser := hclparse.NewParser()
@@ -346,9 +345,9 @@ func PreparseConfig(configString string, terragruntOptions *options.TerragruntOp
 	}
 
 	result := &TerragruntPreparseResult{
-		File: file,
+		File:     file,
 		Filename: filename,
-		Parser:parser,
+		Parser:   parser,
 	}
 
 	// Decode just the Include blocks. See the function docs for DecodeIncludeBlocks for more info.
@@ -361,8 +360,8 @@ func PreparseConfig(configString string, terragruntOptions *options.TerragruntOp
 	result.IncludeConfig = includeForDecode
 
 	if result.Include.Include != nil {
-		includedConfigString, includedPath,  err := readIncludedConfig(result.Include.Include, terragruntOptions)
-		result.Parent, err = PreparseConfig(includedConfigString, terragruntOptions,result.Include.Include, includedPath)
+		includedConfigString, includedPath, err := readIncludedConfig(result.Include.Include, terragruntOptions)
+		result.Parent, err = PreparseConfig(includedConfigString, terragruntOptions, result.Include.Include, includedPath)
 		if err != nil {
 			return nil, err
 		}
@@ -396,59 +395,35 @@ func PreparseConfig(configString string, terragruntOptions *options.TerragruntOp
 // 5. Merge the included config with the parsed config. Note that all the config data is mergable except for `locals`
 //    blocks, which are only scoped to be available within the defining config.
 func ParseConfigString(configString string, terragruntOptions *options.TerragruntOptions, includeFromChild *IncludeConfig, filename string) (*TerragruntConfig, error) {
+	configParser := NewConfigParser()
 
-	preparse, err := PreparseConfig(configString, terragruntOptions, includeFromChild, filename)
+	configParser.Options = terragruntOptions
+	err := configParser.ParseConfigFile(filename)
 	if err != nil {
 		return nil, err
 	}
 
-	childResult, _,  err := ParseConfigVariables(terragruntOptions, preparse)
-	if err != nil {
-		return nil, err
-	}
-	localsAsCty := childResult.Variables[local]
-	globalsAsCty := childResult.Variables[global]
-
-	// Initialize evaluation context extensions from base blocks.
-	contextExtensions := EvalContextExtensions{
-		Locals:  &localsAsCty,
-		Globals: &globalsAsCty,
-		Include: preparse.IncludeConfig,
-	}
-
-	// Decode just the `dependency` blocks, retrieving the outputs from the target terragrunt config in the
-	// process.
-	retrievedOutputs, err := decodeAndRetrieveOutputs(preparse.File, filename, terragruntOptions, contextExtensions)
-	if err != nil {
-		return nil, err
-	}
-	contextExtensions.DecodedDependencies = retrievedOutputs
-
-	// Decode the rest of the config, passing in this config's `include` block or the child's `include` block, whichever
-	// is appropriate
-	terragruntConfigFile, err := decodeAsTerragruntConfigFile(preparse.File, filename, terragruntOptions, contextExtensions)
-	if err != nil {
-		return nil, err
-	}
-	if terragruntConfigFile == nil {
-		return nil, errors.WithStackTrace(CouldNotResolveTerragruntConfigInFile(filename))
-	}
-
-	config, err := convertToTerragruntConfig(terragruntConfigFile, filename, terragruntOptions, contextExtensions)
+	err = configParser.ProcessIncludes()
 	if err != nil {
 		return nil, err
 	}
 
-	// If this file includes another, parse and merge it.  Otherwise just return this config.
-	/*if terragruntInclude.Include != nil {
-		includedConfig, err := parseIncludedConfig(terragruntInclude.Include, terragruntOptions)
-		if err != nil {
-			return nil, err
-		}
-		return mergeConfigWithIncludedConfig(config, includedConfig, terragruntOptions)
-	} else {*/
-	return config, nil
-	//}
+	err = configParser.ProcessVariables()
+	if err != nil {
+		return nil, err
+	}
+
+	err = configParser.ProcessDependencies()
+	if err != nil {
+		return nil, err
+	}
+
+	err = configParser.ProcessRemainder()
+	if err != nil {
+		return nil, err
+	}
+
+	return configParser.Config, nil
 }
 
 func getIncludedConfigForDecode(
