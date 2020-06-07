@@ -275,9 +275,9 @@ func RunTerragrunt(terragruntOptions *options.TerragruntOptions) error {
 		return runGraphDependencies(terragruntOptions)
 	}
 
-	if err := checkVersionConstraints(terragruntOptions); err != nil {
+	/*if err := checkVersionConstraints(terragruntOptions); err != nil {
 		return err
-	}
+	}*/
 
 	terragruntConfig, err := config.ReadTerragruntConfig(terragruntOptions)
 	if err != nil {

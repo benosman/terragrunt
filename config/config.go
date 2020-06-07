@@ -398,7 +398,8 @@ func ParseConfigString(configString string, terragruntOptions *options.Terragrun
 	configParser := NewConfigParser()
 
 	configParser.Options = terragruntOptions
-	err := configParser.ParseConfigFile(filename)
+	configParser.Filename = filename
+	err := configParser.ParseConfigFile()
 	if err != nil {
 		return nil, err
 	}
@@ -408,22 +409,12 @@ func ParseConfigString(configString string, terragruntOptions *options.Terragrun
 		return nil, err
 	}
 
-	err = configParser.ProcessVariables()
+	err = configParser.ProcessVariables(nil)
 	if err != nil {
 		return nil, err
 	}
 
-	err = configParser.ProcessDependencies()
-	if err != nil {
-		return nil, err
-	}
-
-	err = configParser.ProcessRemainder()
-	if err != nil {
-		return nil, err
-	}
-
-	return configParser.Config, nil
+	return configParser.Finalize()
 }
 
 func getIncludedConfigForDecode(

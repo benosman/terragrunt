@@ -13,7 +13,6 @@ import (
 
 const local = "local"
 const global = "global"
-const include = "include"
 
 type rootVertex struct {
 }
@@ -54,14 +53,10 @@ type evaluatorGlobals struct {
 }
 
 type configEvaluator struct {
-	globals evaluatorGlobals
-
-	configPath   string
-	configFile   *hcl.File
-
+	globals 	 *evaluatorGlobals
+	configParser *ConfigParser
 	localVertices  map[string]variableVertex
 	localValues    map[string]cty.Value
-	includeVertex  *variableVertex
 }
 
 type EvaluationResult struct {
@@ -69,24 +64,22 @@ type EvaluationResult struct {
 	Variables  map[string]cty.Value
 }
 
-func newConfigEvaluator(configFile *hcl.File, configPath string, globals evaluatorGlobals) *configEvaluator {
-	eval := configEvaluator{}
-	eval.globals = globals
-	eval.configPath = configPath
-	eval.configFile = configFile
+func newConfigEvaluator(configParser *ConfigParser) *configEvaluator {
+	eval := &configEvaluator{}
+	eval.configParser = configParser
 
 	eval.localVertices = map[string]variableVertex{}
 	eval.localValues = map[string]cty.Value{}
 
-	eval.includeVertex = nil
 
-	return &eval
+	return eval
 }
 
 // Evaluation Steps:
-// 1. Parse child HCL, extract locals, globals
-// 2. Add vertices for child locals, globals
-// 3. Add edges for child variables based on interpolations used
+// 1. Init Globals
+// 2. Extract locals, globals
+// 3. Add vertices for child locals, globals
+// 4. Add edges for child variables based on interpolations used
 //     a. When encountering globals that aren't defined in this config, create a vertex for them with an empty expression
 // 4. Verify DAG and reduce graph
 // 5. Evaluate everything except globals
@@ -96,12 +89,10 @@ func newConfigEvaluator(configFile *hcl.File, configPath string, globals evaluat
 // 9. Verify and reduce graph
 //     a. Verify that there are no globals that are empty.
 // 10. Evaluate everything, skipping things that were evaluated in (5)
-func ParseConfigVariables(
-	configParser *ConfigParser,
-) (*EvaluationResult, *EvaluationResult, error) {
+func (eval *configEvaluator) initGlobals() {
 	globals := evaluatorGlobals{
-		options:  configParser.Options,
-		parser:   configParser.Parser,
+		options:  eval.configParser.Options,
+		parser:   eval.configParser.Parser,
 		graph:    dag.AcyclicGraph{},
 		root:     rootVertex{},
 		vertices: map[string]variableVertex{},
@@ -111,55 +102,35 @@ func ParseConfigVariables(
 	// Add root of graph
 	globals.graph.Add(globals.root)
 
-	child := *newConfigEvaluator(configParser.File, configParser.Filename, globals)
-	var childResult *EvaluationResult = nil
-
-	// 1, 2, 3, 4
-	err := child.decodeConfig()
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// 5
-	diags := globals.evaluateVariables(false)
-	if diags != nil {
-		return nil, nil, diags
-	}
-
-	var parent *configEvaluator = nil
-	var parentResult *EvaluationResult = nil
-
-	if configParser.Parent != nil {
-		// 6, 7, 8, 9
-		parent = newConfigEvaluator(configParser.Parent.File, configParser.Parent.Filename, globals)
-		err = (*parent).decodeConfig()
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-
-	// 10
-	diags = globals.evaluateVariables(true)
-	if diags != nil {
-		return nil, nil, diags
-	}
-
-	childResult, err = child.toResult()
-	if err != nil {
-		return nil, nil, err
-	}
-	if parent != nil {
-		parentResult, err = parent.toResult()
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-
-	return childResult, parentResult, nil
+	eval.globals = &globals
 }
 
-func (eval *configEvaluator) decodeConfig() error {
-	localsBlock, globalsBlock, diags := eval.getBlocks(eval.configFile)
+func (eval *configEvaluator) setGlobals(globals *evaluatorGlobals) {
+	if globals != nil {
+		eval.globals = globals
+	} else {
+		eval.initGlobals()
+	}
+}
+
+func (eval *configEvaluator) evaluateLocals() error {
+	diags :=  eval.globals.evaluateVariables(false)
+	if diags.HasErrors() {
+		return diags
+	}
+	return nil
+}
+
+func (eval *configEvaluator) evaluateAllVariables() error {
+	diags :=  eval.globals.evaluateVariables(true)
+	if diags.HasErrors() {
+		return diags
+	}
+	return nil
+}
+
+func (eval *configEvaluator) decodeVariables() error {
+	localsBlock, globalsBlock, diags := eval.getBlocks(eval.configParser.File)
 	if diags != nil && diags.HasErrors() {
 		return diags
 	}
@@ -192,12 +163,7 @@ func (eval *configEvaluator) decodeConfig() error {
 	if err != nil {
 		return err
 	}
-	if eval.includeVertex != nil {
-		err = eval.addEdges(*eval.includeVertex)
-		if err != nil {
-			return err
-		}
-	}
+
 	err = eval.addAllEdges(eval.globals.vertices)
 	if err != nil {
 		return err
@@ -286,11 +252,15 @@ func (eval *configEvaluator) addVertices(vertexType string, block hcl.Body, cons
 
 		if vertexType == global {
 			globalVertex, exists := eval.globals.vertices[name]
-			if exists && globalVertex.Expr == nil {
-				// This was referenced by a child but not overridden there
-				vertex = &globalVertex
-				globalVertex.Evaluator = eval
-				globalVertex.Expr = attr.Expr
+			if exists {
+				if globalVertex.Expr == nil {
+					// This was referenced by a child but not overridden there
+					vertex = &globalVertex
+					globalVertex.Evaluator = eval
+					globalVertex.Expr = attr.Expr
+				} else {
+					continue
+				}
 			}
 		}
 
@@ -374,12 +344,6 @@ func (eval *configEvaluator) addEdges(target variableVertex) error {
 				S: source,
 				T: target,
 			})
-		case include:
-			// TODO validate options
-			eval.globals.graph.Connect(&basicEdge{
-				S: eval.includeVertex,
-				T: target,
-			})
 		default:
 			// TODO: error
 			return nil
@@ -422,7 +386,7 @@ func (eval *configEvaluator) toResult() (*EvaluationResult, error) {
 	}
 
 	return &EvaluationResult{
-		ConfigFile: eval.configFile,
+		ConfigFile: eval.configParser.File,
 		Variables:  variables,
 	}, nil
 }

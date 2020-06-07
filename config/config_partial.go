@@ -201,29 +201,25 @@ func PartialParseConfigString(
 	filename string,
 	decodeList []PartialDecodeSectionType,
 ) (*TerragruntConfig, error) {
-	// Parse the HCL string into an AST body that can be decoded multiple times later without having to re-parse
-	parser := hclparse.NewParser()
-	file, err := parseHcl(parser, configString, filename)
+
+	configParser := NewConfigParser()
+	configParser.Options = terragruntOptions
+	configParser.Filename = filename
+	configParser.FileContent = configString
+
+	err := configParser.ParseConfigString()
 	if err != nil {
 		return nil, err
 	}
 
-	// Decode just the Include blocks. See the function docs for DecodeIncludeBlocks for more info.
-	terragruntInclude, includeForDecode, err := DecodeIncludeBlocks(terragruntOptions, parser, file, filename, includeFromChild)
+	err = configParser.ProcessIncludes()
 	if err != nil {
 		return nil, err
 	}
 
-	// Decode just the variable blocks. See the function docs for DecodeVariableBlocks for more info on what variable blocks are.
-	localsAsCty, err := DecodeVariableBlocks(terragruntOptions, parser, file, filename, includeForDecode)
+	err = configParser.ProcessVariables(nil)
 	if err != nil {
 		return nil, err
-	}
-
-	// Initialize evaluation context extensions from base blocks.
-	contextExtensions := EvalContextExtensions{
-		Locals:  localsAsCty,
-		Include: includeForDecode,
 	}
 
 	output := TerragruntConfig{IsPartial: true}
@@ -234,7 +230,7 @@ func PartialParseConfigString(
 		switch decode {
 		case DependenciesBlock:
 			decoded := terragruntDependencies{}
-			err := decodeHcl(file, filename, &decoded, terragruntOptions, contextExtensions)
+			err := decodeHcl(configParser.File, filename, &decoded, terragruntOptions, configParser.Context)
 			if err != nil {
 				return nil, err
 			}
@@ -248,7 +244,7 @@ func PartialParseConfigString(
 
 		case TerraformBlock:
 			decoded := terragruntTerraform{}
-			err := decodeHcl(file, filename, &decoded, terragruntOptions, contextExtensions)
+			err := decodeHcl(configParser.File, filename, &decoded, terragruntOptions, configParser.Context)
 			if err != nil {
 				return nil, err
 			}
@@ -256,7 +252,7 @@ func PartialParseConfigString(
 
 		case DependencyBlock:
 			decoded := terragruntDependency{}
-			err := decodeHcl(file, filename, &decoded, terragruntOptions, contextExtensions)
+			err := decodeHcl(configParser.File, filename, &decoded, terragruntOptions, configParser.Context)
 			if err != nil {
 				return nil, err
 			}
@@ -273,7 +269,7 @@ func PartialParseConfigString(
 
 		case TerragruntFlags:
 			decoded := terragruntFlags{}
-			err := decodeHcl(file, filename, &decoded, terragruntOptions, contextExtensions)
+			err := decodeHcl(configParser.File, filename, &decoded, terragruntOptions, configParser.Context)
 			if err != nil {
 				return nil, err
 			}
@@ -286,7 +282,7 @@ func PartialParseConfigString(
 
 		case TerragruntVersionConstraints:
 			decoded := terragruntVersionConstraints{}
-			err := decodeHcl(file, filename, &decoded, terragruntOptions, contextExtensions)
+			err := decodeHcl(configParser.File, filename, &decoded, terragruntOptions, configParser.Context)
 			if err != nil {
 				return nil, err
 			}
@@ -306,12 +302,12 @@ func PartialParseConfigString(
 	}
 
 	// If this file includes another, parse and merge the partial blocks.  Otherwise just return this config.
-	if terragruntInclude.Include != nil {
-		includedConfig, err := partialParseIncludedConfig(terragruntInclude.Include, terragruntOptions, decodeList)
+	if configParser.Parent != nil {
+		/*includedConfig, err := partialParseIncludedConfig(terragruntInclude.Include, terragruntOptions, decodeList)
 		if err != nil {
 			return nil, err
 		}
-		return mergeConfigWithIncludedConfig(&output, includedConfig, terragruntOptions)
+		return mergeConfigWithIncludedConfig(&output, includedConfig, terragruntOptions)*/
 	}
 	return &output, nil
 }

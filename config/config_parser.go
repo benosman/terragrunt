@@ -20,12 +20,14 @@ type ConfigParser struct {
 	IncludeConfig *IncludeConfig
 	Context       EvalContextExtensions
 	Config        *TerragruntConfig
+	Eval          *configEvaluator
 }
 
 // NewConfigParser creates a new parser, ready to parse configuration files.
 func NewConfigParser() *ConfigParser {
 	return &ConfigParser{
-		Parser: hclparse.NewParser(),
+		Parser:  hclparse.NewParser(),
+		Context: EvalContextExtensions{},
 	}
 }
 
@@ -53,18 +55,20 @@ func (cp *ConfigParser) GetIncludeFilename(includedConfig *IncludeConfig) (strin
 	return includePath, nil;
 }
 
-func (cp *ConfigParser) ParseConfigFile(filename string) error {
-	cp.Filename = filename
-	err := cp.ReadFile(filename)
+func (cp *ConfigParser) ParseConfigFile() error {
+	err := cp.ReadFile(cp.Filename)
 	if err != nil {
 		return err
 	}
+	return cp.ParseConfigString()
+}
 
-	cp.File, err = parseHcl(cp.Parser, cp.FileContent, filename)
+func (cp *ConfigParser) ParseConfigString() error {
+	file, err := parseHcl(cp.Parser, cp.FileContent, cp.Filename)
 	if err != nil {
 		return err
 	}
-
+	cp.File = file
 	return nil
 }
 
@@ -95,7 +99,7 @@ func (cp *ConfigParser) ProcessIncludes() error {
 			return err
 		}
 	}
-
+	cp.Context.Include = cp.IncludeConfig
 	return nil
 }
 
@@ -108,7 +112,8 @@ func (cp *ConfigParser) CreateParent(include *IncludeConfig) error {
 		return err
 	}
 
-	err = cp.Parent.ParseConfigFile(filename)
+	cp.Parent.Filename = filename
+	err = cp.Parent.ParseConfigFile()
 	if err != nil {
 		return err
 	}
@@ -121,23 +126,95 @@ func (cp *ConfigParser) CreateParent(include *IncludeConfig) error {
 	return nil
 }
 
-func (cp *ConfigParser) ProcessVariables() error {
-	variables, _, err := ParseConfigVariables(cp)
+func (cp *ConfigParser) PreprocessVariables(globals *evaluatorGlobals) error {
+	cp.Eval = newConfigEvaluator(cp)
+	cp.Eval.setGlobals(globals)
+
+	err := cp.Eval.decodeVariables()
+	if err != nil {
+		return err
+	}
+
+	err = cp.Eval.evaluateLocals()
+	if err != nil {
+		return err
+	}
+
+	if cp.Parent != nil {
+		err := cp.Parent.PreprocessVariables(cp.Eval.globals)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (cp *ConfigParser) EvaluateVariables(localsOnly bool) error {
+	if cp.Parent != nil {
+		err := cp.Parent.EvaluateVariables(true)
+		if err != nil {
+			return err
+		}
+	}
+
+	if localsOnly {
+		err := cp.Eval.evaluateLocals()
+		if err != nil {
+			return err
+		}
+	} else {
+		err := cp.Eval.evaluateAllVariables()
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (cp *ConfigParser) ProcessVariables(globals *evaluatorGlobals) error {
+
+	err := cp.PreprocessVariables(nil)
+	if err != nil {
+		return err
+	}
+
+	err = cp.EvaluateVariables(false)
+	if err != nil {
+		return err
+	}
+	err = cp.Eval.evaluateAllVariables()
+	if err != nil {
+		return err
+	}
+
+
+	err = cp.SetVariables()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (cp *ConfigParser) SetVariables() error {
+	variables, err := cp.Eval.toResult()
 	if err != nil {
 		return err
 	}
 	localsAsCty := variables.Variables[local]
 	globalsAsCty := variables.Variables[global]
+	cp.Context.Locals = &localsAsCty
+	cp.Context.Globals = &globalsAsCty
 
-	// Initialize evaluation context extensions from base blocks.
-	cp.Context = EvalContextExtensions{
-		Locals:  &localsAsCty,
-		Globals: &globalsAsCty,
-		Include: cp.IncludeConfig,
+	if cp.Parent != nil {
+		return cp.Parent.SetVariables()
 	}
 
 	return nil
 }
+
 
 func (cp *ConfigParser) ProcessDependencies() error {
 	// Decode the `dependency` blocks, retrieving the outputs from the target terragrunt config in the
@@ -170,15 +247,30 @@ func (cp *ConfigParser) ProcessRemainder() error {
 	return nil
 }
 
-/*
+func (cp *ConfigParser) MergeWithParent() (*TerragruntConfig, error) {
+	parentConfig, err := cp.Parent.Finalize()
+	if err != nil {
+		return nil, err
+	}
 
-// If this file includes another, parse and merge it.  Otherwise just return this config.
-	/*if terragruntInclude.Include != nil {
-		includedConfig, err := parseIncludedConfig(terragruntInclude.Include, terragruntOptions)
-		if err != nil {
-			return nil, err
-		}
-		return mergeConfigWithIncludedConfig(config, includedConfig, terragruntOptions)
-	} else {*/
-//return config, nil
-//}
+    return mergeConfigWithIncludedConfig(cp.Config, parentConfig, cp.Options)
+}
+
+func (cp *ConfigParser) Finalize() (*TerragruntConfig, error) {
+
+	err := cp.ProcessDependencies()
+	if err != nil {
+		return nil, err
+	}
+
+	err = cp.ProcessRemainder()
+	if err != nil {
+		return nil, err
+	}
+
+	if cp.Parent != nil {
+		return cp.MergeWithParent()
+	}
+
+	return cp.Config, nil
+}
