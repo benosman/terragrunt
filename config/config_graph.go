@@ -4,13 +4,11 @@ import (
 	"fmt"
 	"github.com/gruntwork-io/terragrunt/errors"
 	"github.com/gruntwork-io/terragrunt/options"
-	"github.com/gruntwork-io/terragrunt/util"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/hashicorp/terraform/dag"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/gocty"
-	"path/filepath"
 )
 
 const local = "local"
@@ -64,8 +62,6 @@ type configEvaluator struct {
 	localVertices  map[string]variableVertex
 	localValues    map[string]cty.Value
 	includeVertex  *variableVertex
-	includePath    *string
-	includeValue   *map[string]cty.Value
 }
 
 type EvaluationResult struct {
@@ -73,27 +69,26 @@ type EvaluationResult struct {
 	Variables  map[string]cty.Value
 }
 
-func newConfigEvaluator(configPath string, globals evaluatorGlobals, includeValue *map[string]cty.Value) *configEvaluator {
+func newConfigEvaluator(configFile *hcl.File, configPath string, globals evaluatorGlobals) *configEvaluator {
 	eval := configEvaluator{}
 	eval.globals = globals
 	eval.configPath = configPath
+	eval.configFile = configFile
 
 	eval.localVertices = map[string]variableVertex{}
 	eval.localValues = map[string]cty.Value{}
 
 	eval.includeVertex = nil
-	eval.includeValue = includeValue
 
 	return &eval
 }
 
 // Evaluation Steps:
-// 1. Parse child HCL, extract locals, globals, and include
-// 2. Add vertices for child locals, globals, and include
+// 1. Parse child HCL, extract locals, globals
+// 2. Add vertices for child locals, globals
 // 3. Add edges for child variables based on interpolations used
 //     a. When encountering globals that aren't defined in this config, create a vertex for them with an empty expression
 // 4. Verify DAG and reduce graph
-//     a. Verify no globals are used in path to include (if exists)
 // 5. Evaluate everything except globals
 // 6. If include exists, find parent HCL, parse, and extract locals and globals
 // 7. Add vertices for parent locals
@@ -101,10 +96,13 @@ func newConfigEvaluator(configPath string, globals evaluatorGlobals, includeValu
 // 9. Verify and reduce graph
 //     a. Verify that there are no globals that are empty.
 // 10. Evaluate everything, skipping things that were evaluated in (5)
-func ParseConfigVariables(filename string, terragruntOptions *options.TerragruntOptions) (*EvaluationResult, *EvaluationResult, error) {
+func ParseConfigVariables(
+	terragruntOptions *options.TerragruntOptions,
+	preparse *TerragruntPreparseResult,
+) (*EvaluationResult, *EvaluationResult, error) {
 	globals := evaluatorGlobals{
 		options:  terragruntOptions,
-		parser:   hclparse.NewParser(),
+		parser:   preparse.Parser,
 		graph:    dag.AcyclicGraph{},
 		root:     rootVertex{},
 		vertices: map[string]variableVertex{},
@@ -114,11 +112,11 @@ func ParseConfigVariables(filename string, terragruntOptions *options.Terragrunt
 	// Add root of graph
 	globals.graph.Add(globals.root)
 
-	child := *newConfigEvaluator(filename, globals, nil)
+	child := *newConfigEvaluator(preparse.File, preparse.Filename, globals)
 	var childResult *EvaluationResult = nil
 
 	// 1, 2, 3, 4
-	err := child.parseConfig()
+	err := child.decodeConfig()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -131,10 +129,11 @@ func ParseConfigVariables(filename string, terragruntOptions *options.Terragrunt
 
 	var parent *configEvaluator = nil
 	var parentResult *EvaluationResult = nil
-	if child.includePath != nil {
+
+	if preparse.Parent != nil {
 		// 6, 7, 8, 9
-		parent = newConfigEvaluator(*child.includePath, globals, child.includeValue)
-		err = (*parent).parseConfig()
+		parent = newConfigEvaluator(preparse.Parent.File, preparse.Parent.Filename, globals)
+		err = (*parent).decodeConfig()
 		if err != nil {
 			return nil, nil, err
 		}
@@ -160,56 +159,37 @@ func ParseConfigVariables(filename string, terragruntOptions *options.Terragrunt
 	return childResult, parentResult, nil
 }
 
-func (eval *configEvaluator) parseConfig() error {
-	configString, err := util.ReadFileAsString(eval.configPath)
-	if err != nil {
-		return err
-	}
-
-	configFile, err := parseHcl(eval.globals.parser, configString, eval.configPath)
-	if err != nil {
-		return err
-	}
-
-	eval.configFile = configFile
-
-	localsBlock, globalsBlock, includeBlock, diags := eval.getBlocks(configFile)
+func (eval *configEvaluator) decodeConfig() error {
+	localsBlock, globalsBlock, diags := eval.getBlocks(eval.configFile)
 	if diags != nil && diags.HasErrors() {
 		return diags
 	}
 
 	var addedVertices []variableVertex
-	err = eval.addVertices(local, localsBlock, func(vertex variableVertex) error {
-		eval.localVertices[vertex.Name] = vertex
-		addedVertices = append(addedVertices, vertex)
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	if includeBlock != nil {
-		err = eval.addVertices(include, includeBlock, func(vertex variableVertex) error {
-			// TODO: validate include name and ensure only setting this once
-			eval.includeVertex = &vertex
+
+	if localsBlock != nil {
+		err := eval.addVertices(local, localsBlock.Body, func(vertex variableVertex) error {
+			eval.localVertices[vertex.Name] = vertex
 			addedVertices = append(addedVertices, vertex)
 			return nil
 		})
-	}
-	if err != nil {
-		return err
-	}
-	err = eval.addVertices(global, globalsBlock, func(vertex variableVertex) error {
-		eval.globals.vertices[vertex.Name] = vertex
-		addedVertices = append(addedVertices, vertex)
-		return nil
-	})
-	if err != nil {
-		return err
+		if err != nil {
+			return err
+		}
 	}
 
-	// TODO validate include
+	if globalsBlock != nil {
+		err := eval.addVertices(global, globalsBlock.Body, func(vertex variableVertex) error {
+			eval.globals.vertices[vertex.Name] = vertex
+			addedVertices = append(addedVertices, vertex)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
 
-	err = eval.addAllEdges(eval.localVertices)
+	err := eval.addAllEdges(eval.localVertices)
 	if err != nil {
 		return err
 	}
@@ -223,8 +203,6 @@ func (eval *configEvaluator) parseConfig() error {
 	if err != nil {
 		return err
 	}
-
-	// TODO: validate that includes only depend on locals
 
 	err = eval.globals.graph.Validate()
 	if err != nil {
@@ -269,15 +247,7 @@ func (eval *configEvaluator) evaluateVariable(vertex variableVertex, diags hcl.D
 
 	case local:
 		eval.localValues[vertex.Name] = value
-	case include:
-		includePath, includeValue, err := eval.evaluateInclude(value)
-		if err != nil {
-			// TODO: diags.Extend(??)
-			return false
-		}
 
-		eval.includePath = &includePath
-		eval.includeValue = &includeValue
 	default:
 		// TODO: diags.Extend(??)
 		return false
@@ -286,75 +256,25 @@ func (eval *configEvaluator) evaluateVariable(vertex variableVertex, diags hcl.D
 	return true
 }
 
-func (eval *configEvaluator) evaluateInclude(value cty.Value) (string, map[string]cty.Value, error) {
-	// TODO: validate this is a string?
-	includePath := value.AsString()
-	configPath := eval.configPath
-
-	if includePath == "" {
-		return "", nil, IncludedConfigMissingPath(configPath)
-	}
-
-	childConfigPathAbs, err := filepath.Abs(configPath)
-	if err != nil {
-		return "", nil, err
-	}
-
-	if !filepath.IsAbs(includePath) {
-		includePath = util.JoinPath(filepath.Dir(childConfigPathAbs), includePath)
-	}
-
-	relative, err := util.GetPathRelativeTo(filepath.Dir(configPath), filepath.Dir(includePath))
-	if err != nil {
-		return "", nil, err
-	}
-
-	includeValue := map[string]cty.Value{
-		"parent": cty.StringVal(filepath.ToSlash(filepath.Dir(includePath))),
-		"relative": cty.StringVal(relative),
-	}
-
-	return includePath, includeValue, nil
-}
-
-func (eval *configEvaluator) getBlocks(file *hcl.File) (hcl.Body, hcl.Body, hcl.Body, hcl.Diagnostics) {
+func (eval *configEvaluator) getBlocks(file *hcl.File) (*hcl.Block, *hcl.Block, hcl.Diagnostics) {
 	const locals = "locals"
 	const globals = "globals"
 
-	blocksSchema := &hcl.BodySchema{
-		Blocks: []hcl.BlockHeaderSchema{
-			{Type: locals},
-			{Type: globals},
-			{Type: include},
-		},
-	}
 
-	parsedBlocks, _, diags := file.Body.PartialContent(blocksSchema)
+	localsBlock, diags := getLocalsBlock(file)
 	if diags != nil && diags.HasErrors() {
-		return nil, nil, nil, diags
-	}
-	blocksByType := map[string][]*hcl.Block{}
-
-	for _, block := range parsedBlocks.Blocks {
-		if block.Type == locals || block.Type == globals || block.Type == include {
-			blocks := blocksByType[block.Type]
-			if blocks == nil {
-				blocks = []*hcl.Block{}
-			}
-
-			blocksByType[block.Type] = append(blocks, block)
-		}
+		return nil, nil, diags
 	}
 
-	// TODO: validate blocks
-
-
-	if _, exists := blocksByType[include]; exists {
-		return blocksByType[locals][0].Body, blocksByType[globals][0].Body, blocksByType[include][0].Body, diags
-	} else {
-		return blocksByType[locals][0].Body, blocksByType[globals][0].Body, nil, diags
+	globalsBlock, diags := getGlobalsBlock(file)
+	if diags != nil && diags.HasErrors() {
+		return nil, nil, diags
 	}
+
+
+	return localsBlock, globalsBlock, diags
 }
+
 
 func (eval *configEvaluator) addVertices(vertexType string, block hcl.Body, consumer func(vertex variableVertex) error) error {
 	attrs, diags := block.JustAttributes()
@@ -481,10 +401,6 @@ func (eval *configEvaluator) convertValuesToVariables() (map[string]cty.Value, e
 	values := map[string]map[string]cty.Value{
 		local: eval.localValues,
 		global: eval.globals.values,
-	}
-
-	if eval.includeValue != nil {
-		values[include] = *eval.includeValue
 	}
 
 	variables := map[string]cty.Value{}

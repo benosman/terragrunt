@@ -65,11 +65,6 @@ type terragruntDependency struct {
 	Remain       hcl.Body     `hcl:",remain"`
 }
 
-type terragruntGlobals struct {
-	Globals      *cty.Value   `hcl:"globals,attr"`
-	Remain       hcl.Body     `hcl:",remain"`
-}
-
 // DecodeIncludes takes in a parsed HCL2 file and decodes the include blocks. Include blocks are blocks that should always
 // be decoded even in partial decoding, because they provide bindings that are necessary for parsing any block in the
 // file. Currently base blocks are:
