@@ -4,6 +4,7 @@ locals {
 globals {
   region = "us-west-2"
   source-postfix = null
+  base = "root"
 }
 terraform {
   source = "${local.source-prefix}${global.source-postfix}"
