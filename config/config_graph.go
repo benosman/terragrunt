@@ -5,8 +5,8 @@ import (
 	"github.com/gruntwork-io/terragrunt/errors"
 	"github.com/gruntwork-io/terragrunt/options"
 	"github.com/gruntwork-io/terragrunt/util"
-	"github.com/hashicorp/hcl2/hcl"
-	"github.com/hashicorp/hcl2/hclparse"
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/hashicorp/terraform/dag"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/gocty"
@@ -140,6 +140,24 @@ func ParseConfigVariables(filename string, terragruntOptions *options.Terragrunt
 		}
 	}
 
+	err = child.addAllEdges(child.localVertices)
+	if err != nil {
+		return nil, nil, err
+	}
+	err = child.addAllEdges(child.globals.vertices)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// TODO: validate that includes only depend on locals
+
+	err = child.globals.graph.Validate()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	child.globals.graph.TransitiveReduction()
+
 	// 10
 	diags = globals.evaluateVariables(true)
 	if diags != nil {
@@ -225,13 +243,6 @@ func (eval *configEvaluator) parseConfig() error {
 	}
 
 	// TODO: validate that includes only depend on locals
-
-	err = eval.globals.graph.Validate()
-	if err != nil {
-		return err
-	}
-
-	eval.globals.graph.TransitiveReduction()
 
 	return nil
 }
@@ -366,23 +377,18 @@ func (eval *configEvaluator) addVertices(vertexType string, block hcl.Body, cons
 		var vertex *variableVertex = nil
 
 		if vertexType == global {
-			globalVertex, exists := eval.globals.vertices[name]
-			if exists && globalVertex.Expr == nil {
-				// This was referenced by a child but not overridden there
-				vertex = &globalVertex
-				globalVertex.Evaluator = eval
-				globalVertex.Expr = attr.Expr
+			_, exists := eval.globals.vertices[name]
+			if exists {
+				continue
 			}
 		}
 
-		if vertex == nil {
-			vertex = &variableVertex{
-				Evaluator: eval,
-				Type: vertexType,
-				Name: name,
-				Expr: attr.Expr,
-				Evaluated: false,
-			}
+		vertex = &variableVertex{
+			Evaluator: eval,
+			Type: vertexType,
+			Name: name,
+			Expr: attr.Expr,
+			Evaluated: false,
 		}
 
 		eval.globals.graph.Add(*vertex)
@@ -431,14 +437,7 @@ func (eval *configEvaluator) addEdges(target variableVertex) error {
 		case global:
 			source, exists := eval.globals.vertices[sourceName]
 			if !exists {
-				// Could come from parent context, add empty node for now.
-				source = variableVertex{
-					Evaluator: nil,
-					Type: global,
-					Name: sourceName,
-					Expr: nil,
-					Evaluated: false,
-				}
+				continue
 			}
 			eval.globals.graph.Connect(&basicEdge{
 				S: source,
@@ -448,7 +447,7 @@ func (eval *configEvaluator) addEdges(target variableVertex) error {
 			source, exists := eval.localVertices[sourceName]
 			if !exists {
 				// TODO: error
-				return nil
+				continue
 			}
 
 			eval.globals.graph.Connect(&basicEdge{

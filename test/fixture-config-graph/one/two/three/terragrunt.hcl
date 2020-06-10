@@ -4,6 +4,7 @@ locals {
   region = "us-east-1"
   parent = "${local.parent-dir}/terragrunt.hcl"
   parent-dir = "../../.."
+  base = global.base
 }
 globals {
   region = local.region

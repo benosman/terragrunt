@@ -15,6 +15,7 @@ func TestGraphCreation(t *testing.T) {
 	}
 
 	assert.Equal(t,"test-us-east-1", child.Variables["local"].AsValueMap()["full-name"].AsString())
+	assert.Equal(t,"root", child.Variables["local"].AsValueMap()["base"].AsString())
 	assert.Equal(t,"../../../terragrunt.hcl-one/two/three", child.Variables["global"].AsValueMap()["source-postfix"].AsString())
 	assert.Equal(t,"../../../terragrunt.hcl-one/two/three", parent.Variables["global"].AsValueMap()["source-postfix"].AsString())
 }
