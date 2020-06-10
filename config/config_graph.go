@@ -129,6 +129,31 @@ func (eval *configEvaluator) evaluateAllVariables() error {
 	return nil
 }
 
+
+func (eval *configEvaluator) processEdges(validate bool) error {
+	err := eval.addAllEdges(eval.localVertices)
+	if err != nil {
+		return err
+	}
+
+	err = eval.addAllEdges(eval.globals.vertices)
+	if err != nil {
+		return err
+	}
+
+	if validate {
+		err = eval.globals.graph.Validate()
+		if err != nil {
+			return err
+		}
+
+		eval.globals.graph.TransitiveReduction()
+	}
+
+	return nil
+}
+
+
 func (eval *configEvaluator) decodeVariables() error {
 	localsBlock, globalsBlock, diags := eval.getBlocks(eval.configParser.File)
 	if diags != nil && diags.HasErrors() {
@@ -158,23 +183,6 @@ func (eval *configEvaluator) decodeVariables() error {
 			return err
 		}
 	}
-
-	err := eval.addAllEdges(eval.localVertices)
-	if err != nil {
-		return err
-	}
-
-	err = eval.addAllEdges(eval.globals.vertices)
-	if err != nil {
-		return err
-	}
-
-	err = eval.globals.graph.Validate()
-	if err != nil {
-		return err
-	}
-
-	eval.globals.graph.TransitiveReduction()
 
 	return nil
 }
@@ -251,27 +259,19 @@ func (eval *configEvaluator) addVertices(vertexType string, block hcl.Body, cons
 		var vertex *variableVertex = nil
 
 		if vertexType == global {
-			globalVertex, exists := eval.globals.vertices[name]
+			_, exists := eval.globals.vertices[name]
 			if exists {
-				if globalVertex.Expr == nil {
-					// This was referenced by a child but not overridden there
-					vertex = &globalVertex
-					globalVertex.Evaluator = eval
-					globalVertex.Expr = attr.Expr
-				} else {
-					continue
-				}
+				// Already set by child, so skip
+				continue
 			}
 		}
 
-		if vertex == nil {
-			vertex = &variableVertex{
-				Evaluator: eval,
-				Type: vertexType,
-				Name: name,
-				Expr: attr.Expr,
-				Evaluated: false,
-			}
+		vertex = &variableVertex{
+			Evaluator: eval,
+			Type:      vertexType,
+			Name:      name,
+			Expr:      attr.Expr,
+			Evaluated: false,
 		}
 
 		eval.globals.graph.Add(*vertex)
@@ -320,14 +320,8 @@ func (eval *configEvaluator) addEdges(target variableVertex) error {
 		case global:
 			source, exists := eval.globals.vertices[sourceName]
 			if !exists {
-				// Could come from parent context, add empty node for now.
-				source = variableVertex{
-					Evaluator: nil,
-					Type: global,
-					Name: sourceName,
-					Expr: nil,
-					Evaluated: false,
-				}
+				// Source not yet created, skip for now.
+				continue
 			}
 			eval.globals.graph.Connect(&basicEdge{
 				S: source,

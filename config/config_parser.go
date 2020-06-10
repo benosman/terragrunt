@@ -145,6 +145,13 @@ func (cp *ConfigParser) PreprocessVariables(globals *evaluatorGlobals) error {
 		if err != nil {
 			return err
 		}
+
+	}
+
+	// Only validate the graph for the child config file
+	err = cp.Eval.processEdges(globals == nil)
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -188,7 +195,6 @@ func (cp *ConfigParser) ProcessVariables(globals *evaluatorGlobals) error {
 	if err != nil {
 		return err
 	}
-
 
 	err = cp.SetVariables()
 	if err != nil {
