@@ -4,18 +4,15 @@ import (
 	"fmt"
 	"github.com/gruntwork-io/terragrunt/errors"
 	"github.com/gruntwork-io/terragrunt/options"
-	"github.com/gruntwork-io/terragrunt/util"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/hashicorp/terraform/dag"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/gocty"
-	"path/filepath"
 )
 
 const local = "local"
 const global = "global"
-const include = "include"
 
 type rootVertex struct {
 }
@@ -56,16 +53,10 @@ type evaluatorGlobals struct {
 }
 
 type configEvaluator struct {
-	globals evaluatorGlobals
-
-	configPath   string
-	configFile   *hcl.File
-
+	globals 	 *evaluatorGlobals
+	configParser *ConfigParser
 	localVertices  map[string]variableVertex
 	localValues    map[string]cty.Value
-	includeVertex  *variableVertex
-	includePath    *string
-	includeValue   *map[string]cty.Value
 }
 
 type EvaluationResult struct {
@@ -73,27 +64,24 @@ type EvaluationResult struct {
 	Variables  map[string]cty.Value
 }
 
-func newConfigEvaluator(configPath string, globals evaluatorGlobals, includeValue *map[string]cty.Value) *configEvaluator {
-	eval := configEvaluator{}
-	eval.globals = globals
-	eval.configPath = configPath
+func newConfigEvaluator(configParser *ConfigParser) *configEvaluator {
+	eval := &configEvaluator{}
+	eval.configParser = configParser
 
 	eval.localVertices = map[string]variableVertex{}
 	eval.localValues = map[string]cty.Value{}
 
-	eval.includeVertex = nil
-	eval.includeValue = includeValue
 
-	return &eval
+	return eval
 }
 
 // Evaluation Steps:
-// 1. Parse child HCL, extract locals, globals, and include
-// 2. Add vertices for child locals, globals, and include
-// 3. Add edges for child variables based on interpolations used
+// 1. Init Globals
+// 2. Extract locals, globals
+// 3. Add vertices for child locals, globals
+// 4. Add edges for child variables based on interpolations used
 //     a. When encountering globals that aren't defined in this config, create a vertex for them with an empty expression
 // 4. Verify DAG and reduce graph
-//     a. Verify no globals are used in path to include (if exists)
 // 5. Evaluate everything except globals
 // 6. If include exists, find parent HCL, parse, and extract locals and globals
 // 7. Add vertices for parent locals
@@ -101,10 +89,10 @@ func newConfigEvaluator(configPath string, globals evaluatorGlobals, includeValu
 // 9. Verify and reduce graph
 //     a. Verify that there are no globals that are empty.
 // 10. Evaluate everything, skipping things that were evaluated in (5)
-func ParseConfigVariables(filename string, terragruntOptions *options.TerragruntOptions) (*EvaluationResult, *EvaluationResult, error) {
+func (eval *configEvaluator) initGlobals() {
 	globals := evaluatorGlobals{
-		options:  terragruntOptions,
-		parser:   hclparse.NewParser(),
+		options:  eval.configParser.Options,
+		parser:   eval.configParser.Parser,
 		graph:    dag.AcyclicGraph{},
 		root:     rootVertex{},
 		vertices: map[string]variableVertex{},
@@ -114,135 +102,87 @@ func ParseConfigVariables(filename string, terragruntOptions *options.Terragrunt
 	// Add root of graph
 	globals.graph.Add(globals.root)
 
-	child := *newConfigEvaluator(filename, globals, nil)
-	var childResult *EvaluationResult = nil
-
-	// 1, 2, 3, 4
-	err := child.parseConfig()
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// 5
-	diags := globals.evaluateVariables(false)
-	if diags != nil {
-		return nil, nil, diags
-	}
-
-	var parent *configEvaluator = nil
-	var parentResult *EvaluationResult = nil
-	if child.includePath != nil {
-		// 6, 7, 8, 9
-		parent = newConfigEvaluator(*child.includePath, globals, child.includeValue)
-		err = (*parent).parseConfig()
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-
-	err = child.addAllEdges(child.localVertices)
-	if err != nil {
-		return nil, nil, err
-	}
-	err = child.addAllEdges(child.globals.vertices)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// TODO: validate that includes only depend on locals
-
-	err = child.globals.graph.Validate()
-	if err != nil {
-		return nil, nil, err
-	}
-
-	child.globals.graph.TransitiveReduction()
-
-	// 10
-	diags = globals.evaluateVariables(true)
-	if diags != nil {
-		return nil, nil, diags
-	}
-
-	childResult, err = child.toResult()
-	if err != nil {
-		return nil, nil, err
-	}
-	if parent != nil {
-		parentResult, err = parent.toResult()
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-
-	return childResult, parentResult, nil
+	eval.globals = &globals
 }
 
-func (eval *configEvaluator) parseConfig() error {
-	configString, err := util.ReadFileAsString(eval.configPath)
-	if err != nil {
-		return err
+func (eval *configEvaluator) setGlobals(globals *evaluatorGlobals) {
+	if globals != nil {
+		eval.globals = globals
+	} else {
+		eval.initGlobals()
 	}
+}
 
-	configFile, err := parseHcl(eval.globals.parser, configString, eval.configPath)
-	if err != nil {
-		return err
-	}
-
-	eval.configFile = configFile
-
-	localsBlock, globalsBlock, includeBlock, diags := eval.getBlocks(configFile)
-	if diags != nil && diags.HasErrors() {
+func (eval *configEvaluator) evaluateLocals() error {
+	diags :=  eval.globals.evaluateVariables(false)
+	if diags.HasErrors() {
 		return diags
 	}
+	return nil
+}
 
-	var addedVertices []variableVertex
-	err = eval.addVertices(local, localsBlock, func(vertex variableVertex) error {
-		eval.localVertices[vertex.Name] = vertex
-		addedVertices = append(addedVertices, vertex)
-		return nil
-	})
-	if err != nil {
-		return err
+func (eval *configEvaluator) evaluateAllVariables() error {
+	diags :=  eval.globals.evaluateVariables(true)
+	if diags.HasErrors() {
+		return diags
 	}
-	if includeBlock != nil {
-		err = eval.addVertices(include, includeBlock, func(vertex variableVertex) error {
-			// TODO: validate include name and ensure only setting this once
-			eval.includeVertex = &vertex
-			addedVertices = append(addedVertices, vertex)
-			return nil
-		})
-	}
-	if err != nil {
-		return err
-	}
-	err = eval.addVertices(global, globalsBlock, func(vertex variableVertex) error {
-		eval.globals.vertices[vertex.Name] = vertex
-		addedVertices = append(addedVertices, vertex)
-		return nil
-	})
+	return nil
+}
+
+
+func (eval *configEvaluator) processEdges(validate bool) error {
+	err := eval.addAllEdges(eval.localVertices)
 	if err != nil {
 		return err
 	}
 
-	// TODO validate include
-
-	err = eval.addAllEdges(eval.localVertices)
-	if err != nil {
-		return err
-	}
-	if eval.includeVertex != nil {
-		err = eval.addEdges(*eval.includeVertex)
-		if err != nil {
-			return err
-		}
-	}
 	err = eval.addAllEdges(eval.globals.vertices)
 	if err != nil {
 		return err
 	}
 
-	// TODO: validate that includes only depend on locals
+	if validate {
+		err = eval.globals.graph.Validate()
+		if err != nil {
+			return err
+		}
+
+		eval.globals.graph.TransitiveReduction()
+	}
+
+	return nil
+}
+
+
+func (eval *configEvaluator) decodeVariables() error {
+	localsBlock, globalsBlock, diags := eval.getBlocks(eval.configParser.File)
+	if diags != nil && diags.HasErrors() {
+		return diags
+	}
+
+	var addedVertices []variableVertex
+
+	if localsBlock != nil {
+		err := eval.addVertices(local, localsBlock.Body, func(vertex variableVertex) error {
+			eval.localVertices[vertex.Name] = vertex
+			addedVertices = append(addedVertices, vertex)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	if globalsBlock != nil {
+		err := eval.addVertices(global, globalsBlock.Body, func(vertex variableVertex) error {
+			eval.globals.vertices[vertex.Name] = vertex
+			addedVertices = append(addedVertices, vertex)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
@@ -280,15 +220,7 @@ func (eval *configEvaluator) evaluateVariable(vertex variableVertex, diags hcl.D
 
 	case local:
 		eval.localValues[vertex.Name] = value
-	case include:
-		includePath, includeValue, err := eval.evaluateInclude(value)
-		if err != nil {
-			// TODO: diags.Extend(??)
-			return false
-		}
 
-		eval.includePath = &includePath
-		eval.includeValue = &includeValue
 	default:
 		// TODO: diags.Extend(??)
 		return false
@@ -297,75 +229,25 @@ func (eval *configEvaluator) evaluateVariable(vertex variableVertex, diags hcl.D
 	return true
 }
 
-func (eval *configEvaluator) evaluateInclude(value cty.Value) (string, map[string]cty.Value, error) {
-	// TODO: validate this is a string?
-	includePath := value.AsString()
-	configPath := eval.configPath
-
-	if includePath == "" {
-		return "", nil, IncludedConfigMissingPath(configPath)
-	}
-
-	childConfigPathAbs, err := filepath.Abs(configPath)
-	if err != nil {
-		return "", nil, err
-	}
-
-	if !filepath.IsAbs(includePath) {
-		includePath = util.JoinPath(filepath.Dir(childConfigPathAbs), includePath)
-	}
-
-	relative, err := util.GetPathRelativeTo(filepath.Dir(configPath), filepath.Dir(includePath))
-	if err != nil {
-		return "", nil, err
-	}
-
-	includeValue := map[string]cty.Value{
-		"parent": cty.StringVal(filepath.ToSlash(filepath.Dir(includePath))),
-		"relative": cty.StringVal(relative),
-	}
-
-	return includePath, includeValue, nil
-}
-
-func (eval *configEvaluator) getBlocks(file *hcl.File) (hcl.Body, hcl.Body, hcl.Body, hcl.Diagnostics) {
+func (eval *configEvaluator) getBlocks(file *hcl.File) (*hcl.Block, *hcl.Block, hcl.Diagnostics) {
 	const locals = "locals"
 	const globals = "globals"
 
-	blocksSchema := &hcl.BodySchema{
-		Blocks: []hcl.BlockHeaderSchema{
-			{Type: locals},
-			{Type: globals},
-			{Type: include},
-		},
-	}
 
-	parsedBlocks, _, diags := file.Body.PartialContent(blocksSchema)
+	localsBlock, diags := getLocalsBlock(file)
 	if diags != nil && diags.HasErrors() {
-		return nil, nil, nil, diags
-	}
-	blocksByType := map[string][]*hcl.Block{}
-
-	for _, block := range parsedBlocks.Blocks {
-		if block.Type == locals || block.Type == globals || block.Type == include {
-			blocks := blocksByType[block.Type]
-			if blocks == nil {
-				blocks = []*hcl.Block{}
-			}
-
-			blocksByType[block.Type] = append(blocks, block)
-		}
+		return nil, nil, diags
 	}
 
-	// TODO: validate blocks
-
-
-	if _, exists := blocksByType[include]; exists {
-		return blocksByType[locals][0].Body, blocksByType[globals][0].Body, blocksByType[include][0].Body, diags
-	} else {
-		return blocksByType[locals][0].Body, blocksByType[globals][0].Body, nil, diags
+	globalsBlock, diags := getGlobalsBlock(file)
+	if diags != nil && diags.HasErrors() {
+		return nil, nil, diags
 	}
+
+
+	return localsBlock, globalsBlock, diags
 }
+
 
 func (eval *configEvaluator) addVertices(vertexType string, block hcl.Body, consumer func(vertex variableVertex) error) error {
 	attrs, diags := block.JustAttributes()
@@ -379,15 +261,16 @@ func (eval *configEvaluator) addVertices(vertexType string, block hcl.Body, cons
 		if vertexType == global {
 			_, exists := eval.globals.vertices[name]
 			if exists {
+				// Already set by child, so skip
 				continue
 			}
 		}
 
 		vertex = &variableVertex{
 			Evaluator: eval,
-			Type: vertexType,
-			Name: name,
-			Expr: attr.Expr,
+			Type:      vertexType,
+			Name:      name,
+			Expr:      attr.Expr,
 			Evaluated: false,
 		}
 
@@ -437,6 +320,7 @@ func (eval *configEvaluator) addEdges(target variableVertex) error {
 		case global:
 			source, exists := eval.globals.vertices[sourceName]
 			if !exists {
+				// Source not yet created, skip for now.
 				continue
 			}
 			eval.globals.graph.Connect(&basicEdge{
@@ -447,17 +331,11 @@ func (eval *configEvaluator) addEdges(target variableVertex) error {
 			source, exists := eval.localVertices[sourceName]
 			if !exists {
 				// TODO: error
-				continue
+				return nil
 			}
 
 			eval.globals.graph.Connect(&basicEdge{
 				S: source,
-				T: target,
-			})
-		case include:
-			// TODO validate options
-			eval.globals.graph.Connect(&basicEdge{
-				S: eval.includeVertex,
 				T: target,
 			})
 		default:
@@ -482,10 +360,6 @@ func (eval *configEvaluator) convertValuesToVariables() (map[string]cty.Value, e
 		global: eval.globals.values,
 	}
 
-	if eval.includeValue != nil {
-		values[include] = *eval.includeValue
-	}
-
 	variables := map[string]cty.Value{}
 	for k, v := range values {
 		variable, err := gocty.ToCtyValue(v, generateTypeFromMap(v))
@@ -506,7 +380,7 @@ func (eval *configEvaluator) toResult() (*EvaluationResult, error) {
 	}
 
 	return &EvaluationResult{
-		ConfigFile: eval.configFile,
+		ConfigFile: eval.configParser.File,
 		Variables:  variables,
 	}, nil
 }
