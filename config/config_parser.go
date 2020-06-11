@@ -6,6 +6,7 @@ import (
 	"github.com/gruntwork-io/terragrunt/util"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclparse"
+	"github.com/zclconf/go-cty/cty"
 	"path/filepath"
 )
 
@@ -16,6 +17,7 @@ type ConfigParser struct {
 	File          *hcl.File
 	Options       *options.TerragruntOptions
 	Parent        *ConfigParser
+	Child         *ConfigParser
 	Include       *terragruntInclude
 	IncludeConfig *IncludeConfig
 	Context       EvalContextExtensions
@@ -27,7 +29,9 @@ type ConfigParser struct {
 func NewConfigParser() *ConfigParser {
 	return &ConfigParser{
 		Parser:  hclparse.NewParser(),
-		Context: EvalContextExtensions{},
+		Context: EvalContextExtensions{
+			Path: map[string]cty.Value{},
+		},
 	}
 }
 
@@ -69,7 +73,80 @@ func (cp *ConfigParser) ParseConfigString() error {
 		return err
 	}
 	cp.File = file
+
 	return nil
+}
+
+func (cp *ConfigParser) getLevel() int64 {
+	if cp.Parent != nil {
+		return cp.Parent.getLevel() + 1
+	}
+	return 0
+}
+
+func (cp *ConfigParser) rootPath() string {
+	if cp.Parent != nil {
+		return cp.Parent.rootPath()
+	}
+	return cp.Filename
+}
+
+func (cp *ConfigParser) parentPath() string {
+	if cp.Parent != nil {
+		return cp.Parent.Filename
+	}
+	return ""
+}
+
+func (cp *ConfigParser) parentPaths() []cty.Value {
+	if cp.Parent != nil {
+		return append(cp.Parent.parentPaths(), cty.StringVal(cp.Parent.Filename))
+	}
+	return []cty.Value{}
+}
+
+func (cp *ConfigParser) childPaths() []cty.Value {
+	if cp.Child != nil {
+		childPaths := cp.Child.childPaths()
+		return append([]cty.Value{cty.StringVal(cp.Child.Filename)}, childPaths...)
+	}
+	return []cty.Value{}
+}
+
+func (cp *ConfigParser) GetParentPaths() cty.Value {
+	paths := cp.parentPaths()
+	if len(paths) == 0 {
+		return cty.ListValEmpty(cty.String)
+	}
+
+	return cty.ListVal(paths)
+}
+
+func (cp *ConfigParser) GetChildPaths() cty.Value {
+	paths := cp.childPaths()
+	if len(paths) == 0 {
+		return cty.ListValEmpty(cty.String)
+	}
+
+	return cty.ListVal(paths)
+}
+
+
+func (cp *ConfigParser) childPath() string {
+	if cp.Child != nil {
+		return cp.Child.Filename
+	}
+	return ""
+}
+
+func (cp *ConfigParser) SetPaths() {
+	cp.Context.Path["file"]     = cty.StringVal(cp.Filename)
+	cp.Context.Path["root"]     = cty.StringVal(cp.rootPath())
+	cp.Context.Path["parent"]   = cty.StringVal(cp.parentPath())
+	cp.Context.Path["parents"]  = cp.GetParentPaths()
+	cp.Context.Path["child"]    = cty.StringVal(cp.childPath())
+	cp.Context.Path["children"] = cp.GetChildPaths()
+	cp.Context.Path["level"]    = cty.NumberIntVal(cp.getLevel())
 }
 
 func (cp *ConfigParser) ProcessIncludes() error {
@@ -100,6 +177,9 @@ func (cp *ConfigParser) ProcessIncludes() error {
 		}
 	}
 	cp.Context.Include = cp.IncludeConfig
+
+	cp.SetPaths()
+
 	return nil
 }
 
@@ -112,6 +192,7 @@ func (cp *ConfigParser) CreateParent(include *IncludeConfig) error {
 		return err
 	}
 
+	cp.Parent.Child = cp
 	cp.Parent.Filename = filename
 	err = cp.Parent.ParseConfigFile()
 	if err != nil {

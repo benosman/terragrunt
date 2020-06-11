@@ -74,6 +74,9 @@ type EvalContextExtensions struct {
 	// returned.
 	Include *IncludeConfig
 
+	// Path is used to store the paths of current template and those in the hierarchy
+	Path map[string]cty.Value
+
 	// Locals are preevaluated variable bindings that can be used by reference in the code.
 	Locals *cty.Value
 
@@ -132,6 +135,11 @@ func CreateTerragruntEvalContext(
 		Functions: functions,
 	}
 	ctx.Variables = map[string]cty.Value{}
+
+	if extensions.Path != nil {
+		ctx.Variables["path"] = cty.ObjectVal(extensions.Path)
+	}
+
 	if extensions.Locals != nil {
 		ctx.Variables["local"] = *extensions.Locals
 	}
