@@ -185,7 +185,6 @@ func (cp *ConfigParser) ProcessIncludes() error {
 
 func (cp *ConfigParser) CreateParent(include *IncludeConfig) error {
 	cp.Parent = NewConfigParser()
-	cp.Parent.Options = cp.Options
 
 	filename, err := cp.GetIncludeFilename(include)
 	if err != nil {
@@ -194,6 +193,11 @@ func (cp *ConfigParser) CreateParent(include *IncludeConfig) error {
 
 	cp.Parent.Child = cp
 	cp.Parent.Filename = filename
+
+	parentOptions := *cp.Options
+	parentOptions.TerragruntConfigPath = cp.Parent.Filename
+	cp.Parent.Options = &parentOptions
+
 	err = cp.Parent.ParseConfigFile()
 	if err != nil {
 		return err
