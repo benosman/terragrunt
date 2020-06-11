@@ -355,58 +355,26 @@ func ParseConfigFile(filename string, terragruntOptions *options.TerragruntOptio
 // 5. Merge the included config with the parsed config. Note that all the config data is mergable except for `locals`
 //    blocks, which are only scoped to be available within the defining config.
 func ParseConfigString(configString string, terragruntOptions *options.TerragruntOptions, includeFromChild *IncludeConfig, filename string) (*TerragruntConfig, error) {
-	// Parse the HCL string into an AST body that can be decoded multiple times later without having to re-parse
-	parser := hclparse.NewParser()
-	file, err := parseHcl(parser, configString, filename)
+	configParser := NewConfigParser()
+
+	configParser.Options = terragruntOptions
+	configParser.Filename = filename
+	err := configParser.ParseConfigFile()
 	if err != nil {
 		return nil, err
 	}
 
-	// Decode just the Base blocks. See the function docs for DecodeBaseBlocks for more info on what base blocks are.
-	localsAsCty, terragruntInclude, includeForDecode, err := DecodeBaseBlocks(terragruntOptions, parser, file, filename, includeFromChild)
+	err = configParser.ProcessIncludes()
 	if err != nil {
 		return nil, err
 	}
 
-	// Initialize evaluation context extensions from base blocks.
-	contextExtensions := EvalContextExtensions{
-		Locals:  localsAsCty,
-		Include: includeForDecode,
-	}
-
-	// Decode just the `dependency` blocks, retrieving the outputs from the target terragrunt config in the
-	// process.
-	retrievedOutputs, err := decodeAndRetrieveOutputs(file, filename, terragruntOptions, contextExtensions)
-	if err != nil {
-		return nil, err
-	}
-	contextExtensions.DecodedDependencies = retrievedOutputs
-
-	// Decode the rest of the config, passing in this config's `include` block or the child's `include` block, whichever
-	// is appropriate
-	terragruntConfigFile, err := decodeAsTerragruntConfigFile(file, filename, terragruntOptions, contextExtensions)
-	if err != nil {
-		return nil, err
-	}
-	if terragruntConfigFile == nil {
-		return nil, errors.WithStackTrace(CouldNotResolveTerragruntConfigInFile(filename))
-	}
-
-	config, err := convertToTerragruntConfig(terragruntConfigFile, filename, terragruntOptions, contextExtensions)
+	err = configParser.ProcessVariables(nil)
 	if err != nil {
 		return nil, err
 	}
 
-	// If this file includes another, parse and merge it.  Otherwise just return this config.
-	if terragruntInclude.Include != nil {
-		includedConfig, err := parseIncludedConfig(terragruntInclude.Include, terragruntOptions)
-		if err != nil {
-			return nil, err
-		}
-		return mergeConfigWithIncludedConfig(config, includedConfig, terragruntOptions)
-	} else {
-		return config, nil
-	}
+	return configParser.Finalize()
 }
 
 func getIncludedConfigForDecode(
