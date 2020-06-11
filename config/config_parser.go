@@ -7,6 +7,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/zclconf/go-cty/cty"
+	"path"
 	"path/filepath"
 )
 
@@ -91,9 +92,38 @@ func (cp *ConfigParser) rootPath() string {
 	return cp.Filename
 }
 
+func (cp *ConfigParser) rootDir() string {
+	if cp.Parent != nil {
+		return cp.Parent.rootDir()
+	}
+	return path.Dir(cp.Filename)
+}
+
+
 func (cp *ConfigParser) parentPath() string {
 	if cp.Parent != nil {
 		return cp.Parent.Filename
+	}
+	return ""
+}
+
+func (cp *ConfigParser) parentDir() string {
+	if cp.Parent != nil {
+		return path.Dir(cp.Parent.Filename)
+	}
+	return ""
+}
+
+func (cp *ConfigParser) childPath() string {
+	if cp.Child != nil {
+		return cp.Child.Filename
+	}
+	return ""
+}
+
+func (cp *ConfigParser) childDir() string {
+	if cp.Child != nil {
+		return path.Dir(cp.Child.Filename)
 	}
 	return ""
 }
@@ -131,22 +161,18 @@ func (cp *ConfigParser) GetChildPaths() cty.Value {
 	return cty.ListVal(paths)
 }
 
-
-func (cp *ConfigParser) childPath() string {
-	if cp.Child != nil {
-		return cp.Child.Filename
-	}
-	return ""
-}
-
 func (cp *ConfigParser) SetPaths() {
-	cp.Context.Path["file"]     = cty.StringVal(cp.Filename)
-	cp.Context.Path["root"]     = cty.StringVal(cp.rootPath())
-	cp.Context.Path["parent"]   = cty.StringVal(cp.parentPath())
-	cp.Context.Path["parents"]  = cp.GetParentPaths()
-	cp.Context.Path["child"]    = cty.StringVal(cp.childPath())
+	cp.Context.Path["file"] = cty.StringVal(cp.Filename)
+	cp.Context.Path["dir"] = cty.StringVal(path.Dir(cp.Filename))
+	cp.Context.Path["root"] = cty.StringVal(cp.rootDir())
+	cp.Context.Path["root_file"] = cty.StringVal(cp.rootPath())
+	cp.Context.Path["parent"] = cty.StringVal(cp.parentDir())
+	cp.Context.Path["parent_file"] = cty.StringVal(cp.parentPath())
+	cp.Context.Path["parents"] = cp.GetParentPaths()
+	cp.Context.Path["child"] = cty.StringVal(cp.childDir())
+	cp.Context.Path["child_file"] = cty.StringVal(cp.childPath())
 	cp.Context.Path["children"] = cp.GetChildPaths()
-	cp.Context.Path["level"]    = cty.NumberIntVal(cp.getLevel())
+	cp.Context.Path["level"] = cty.NumberIntVal(cp.getLevel())
 }
 
 func (cp *ConfigParser) ProcessIncludes() error {
