@@ -384,3 +384,111 @@ func (cp *ConfigParser) Process() (*TerragruntConfig, error) {
 
 	return cp.Finalize()
 }
+
+func (cp *ConfigParser) DecodePartial(decodeList []PartialDecodeSectionType, merge bool) (*TerragruntConfig, error) {
+	output := &TerragruntConfig{IsPartial: true}
+
+	for _, decode := range decodeList {
+		switch decode {
+		case DependenciesBlock:
+			decoded := terragruntDependencies{}
+			err := decodeHcl(cp.File, cp.Filename, &decoded, cp.Options, cp.Context)
+			if err != nil {
+				return nil, err
+			}
+
+			// If we already decoded some dependencies, merge them in. Otherwise, set as the new list.
+			if output.Dependencies != nil {
+				output.Dependencies.Merge(decoded.Dependencies)
+			} else {
+				output.Dependencies = decoded.Dependencies
+			}
+
+		case TerraformBlock:
+			decoded := terragruntTerraform{}
+			err := decodeHcl(cp.File, cp.Filename, &decoded, cp.Options, cp.Context)
+			if err != nil {
+				return nil, err
+			}
+			output.Terraform = decoded.Terraform
+
+		case DependencyBlock:
+			decoded := terragruntDependency{}
+			err := decodeHcl(cp.File, cp.Filename, &decoded, cp.Options, cp.Context)
+			if err != nil {
+				return nil, err
+			}
+			output.TerragruntDependencies = decoded.Dependencies
+
+			// Convert dependency blocks into module depenency lists. If we already decoded some dependencies,
+			// merge them in. Otherwise, set as the new list.
+			dependencies := dependencyBlocksToModuleDependencies(decoded.Dependencies)
+			if output.Dependencies != nil {
+				output.Dependencies.Merge(dependencies)
+			} else {
+				output.Dependencies = dependencies
+			}
+
+		case TerragruntFlags:
+			decoded := terragruntFlags{}
+			err := decodeHcl(cp.File, cp.Filename, &decoded, cp.Options, cp.Context)
+			if err != nil {
+				return nil, err
+			}
+			if decoded.PreventDestroy != nil {
+				output.PreventDestroy = *decoded.PreventDestroy
+			}
+			if decoded.Skip != nil {
+				output.Skip = *decoded.Skip
+			}
+
+		case TerragruntVersionConstraints:
+			decoded := terragruntVersionConstraints{}
+			err := decodeHcl(cp.File, cp.Filename, &decoded, cp.Options, cp.Context)
+			if err != nil {
+				return nil, err
+			}
+			if decoded.TerragruntVersionConstraint != nil {
+				output.TerragruntVersionConstraint = *decoded.TerragruntVersionConstraint
+			}
+			if decoded.TerraformVersionConstraint != nil {
+				output.TerraformVersionConstraint = *decoded.TerraformVersionConstraint
+			}
+			if decoded.TerraformBinary != nil {
+				output.TerraformBinary = *decoded.TerraformBinary
+			}
+
+		default:
+			return nil, InvalidPartialBlockName{decode}
+		}
+	}
+
+	if merge && cp.Parent != nil {
+		parentOutput, err := cp.Parent.DecodePartial(decodeList, merge)
+		if err != nil {
+			return nil, err
+		}
+		return mergeConfigWithIncludedConfig(output, parentOutput, cp.Options)
+	}
+
+	return output, nil
+}
+
+func (cp *ConfigParser) ProcessPartial(decodeList []PartialDecodeSectionType) (*TerragruntConfig, error) {
+	err := cp.ParseConfigString()
+	if err != nil {
+		return nil, err
+	}
+
+	err = cp.ProcessIncludes()
+	if err != nil {
+		return nil, err
+	}
+
+	err = cp.ProcessVariables(nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return cp.DecodePartial(decodeList, true)
+}
