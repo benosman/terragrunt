@@ -37,6 +37,7 @@ type TerragruntConfig struct {
 	IamRole                     string
 	Inputs                      map[string]interface{}
 	Locals                      map[string]interface{}
+	Globals                     map[string]interface{}
 	TerragruntDependencies      []Dependency
 	GenerateConfigs             map[string]codegen.GenerateConfig
 
@@ -66,15 +67,22 @@ type terragruntConfigFile struct {
 	TerragruntDependencies      []Dependency              `hcl:"dependency,block"`
 	GenerateBlocks              []terragruntGenerateBlock `hcl:"generate,block"`
 
-	// This struct is used for validating and parsing the entire terragrunt config. Since locals are evaluated in a
-	// completely separate cycle, it should not be evaluated here. Otherwise, we can't support self referencing other
-	// elements in the same block.
-	Locals *terragruntLocal `hcl:"locals,block"`
+	// This struct is used for validating and parsing the entire terragrunt config. Since locals and globals are
+	// evaluated in a completely separate cycle, it should not be evaluated here. Otherwise, we can't support self
+	// referencing other elements in the same block.
+	Locals  *terragruntLocal `hcl:"locals,block"`
+	Globals *terragruntLocal `hcl:"globals,block"`
 }
 
 // We use a struct designed to not parse the block, as locals are parsed and decoded using a special routine that allows
 // references to the other locals in the same block.
 type terragruntLocal struct {
+	Remain hcl.Body `hcl:",remain"`
+}
+
+// We use a struct designed to not parse the block, as globals are parsed and decoded using a special routine that allows
+// references to the other globals in the same block.
+type terragruntGlobal struct {
 	Remain hcl.Body `hcl:",remain"`
 }
 
@@ -780,6 +788,14 @@ func convertToTerragruntConfig(
 			return nil, err
 		}
 		terragruntConfig.Locals = localsParsed
+	}
+
+	if contextExtensions.Globals != nil && *contextExtensions.Globals != cty.NilVal {
+		globalsParsed, err := parseCtyValueToMap(*contextExtensions.Globals)
+		if err != nil {
+			return nil, err
+		}
+		terragruntConfig.Globals = globalsParsed
 	}
 
 	return terragruntConfig, nil
