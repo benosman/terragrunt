@@ -356,25 +356,9 @@ func ParseConfigFile(filename string, terragruntOptions *options.TerragruntOptio
 //    blocks, which are only scoped to be available within the defining config.
 func ParseConfigString(configString string, terragruntOptions *options.TerragruntOptions, includeFromChild *IncludeConfig, filename string) (*TerragruntConfig, error) {
 	configParser := NewConfigParser()
-
 	configParser.Options = terragruntOptions
 	configParser.Filename = filename
-	err := configParser.ParseConfigFile()
-	if err != nil {
-		return nil, err
-	}
-
-	err = configParser.ProcessIncludes()
-	if err != nil {
-		return nil, err
-	}
-
-	err = configParser.ProcessVariables(nil)
-	if err != nil {
-		return nil, err
-	}
-
-	return configParser.Finalize()
+	return configParser.Process()
 }
 
 func getIncludedConfigForDecode(

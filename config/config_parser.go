@@ -280,3 +280,22 @@ func (cp *ConfigParser) Finalize() (*TerragruntConfig, error) {
 
 	return cp.Config, nil
 }
+
+func (cp *ConfigParser) Process() (*TerragruntConfig, error) {
+	err := cp.ParseConfigFile()
+	if err != nil {
+		return nil, err
+	}
+
+	err = cp.ProcessIncludes()
+	if err != nil {
+		return nil, err
+	}
+
+	err = cp.ProcessVariables(nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return cp.Finalize()
+}
