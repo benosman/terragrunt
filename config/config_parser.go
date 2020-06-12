@@ -92,13 +92,12 @@ func (cp *ConfigParser) rootPath() string {
 	return cp.Filename
 }
 
-func (cp *ConfigParser) rootDir() string {
-	if cp.Parent != nil {
-		return cp.Parent.rootDir()
+func (cp *ConfigParser) leafPath() string {
+	if cp.Child != nil {
+		return cp.Child.leafPath()
 	}
-	return path.Dir(cp.Filename)
+	return cp.Filename
 }
-
 
 func (cp *ConfigParser) parentPath() string {
 	if cp.Parent != nil {
@@ -107,23 +106,9 @@ func (cp *ConfigParser) parentPath() string {
 	return ""
 }
 
-func (cp *ConfigParser) parentDir() string {
-	if cp.Parent != nil {
-		return path.Dir(cp.Parent.Filename)
-	}
-	return ""
-}
-
 func (cp *ConfigParser) childPath() string {
 	if cp.Child != nil {
 		return cp.Child.Filename
-	}
-	return ""
-}
-
-func (cp *ConfigParser) childDir() string {
-	if cp.Child != nil {
-		return path.Dir(cp.Child.Filename)
 	}
 	return ""
 }
@@ -164,15 +149,28 @@ func (cp *ConfigParser) GetChildPaths() cty.Value {
 func (cp *ConfigParser) SetPaths() {
 	cp.Context.Path["file"] = cty.StringVal(cp.Filename)
 	cp.Context.Path["dir"] = cty.StringVal(path.Dir(cp.Filename))
-	cp.Context.Path["root"] = cty.StringVal(cp.rootDir())
+	cp.Context.Path["root"] = cty.StringVal(path.Dir(cp.rootPath()))
 	cp.Context.Path["root_file"] = cty.StringVal(cp.rootPath())
-	cp.Context.Path["parent"] = cty.StringVal(cp.parentDir())
+	cp.Context.Path["parent"] = cty.StringVal(path.Dir(cp.parentPath()))
 	cp.Context.Path["parent_file"] = cty.StringVal(cp.parentPath())
 	cp.Context.Path["parents"] = cp.GetParentPaths()
-	cp.Context.Path["child"] = cty.StringVal(cp.childDir())
+	cp.Context.Path["child"] = cty.StringVal(path.Dir(cp.childPath()))
 	cp.Context.Path["child_file"] = cty.StringVal(cp.childPath())
 	cp.Context.Path["children"] = cp.GetChildPaths()
 	cp.Context.Path["level"] = cty.NumberIntVal(cp.getLevel())
+
+	relativePath, _ := util.GetPathRelativeTo(path.Dir(cp.rootPath()), path.Dir(cp.Filename))
+	cp.Context.Path["file_to_root"] = cty.StringVal(relativePath)
+
+	relativePath, _ = util.GetPathRelativeTo(path.Dir(cp.rootPath()), path.Dir(cp.leafPath()))
+	cp.Context.Path["leaf_to_root"] = cty.StringVal(relativePath)
+
+	relativePath, _ = util.GetPathRelativeTo(path.Dir(cp.Filename), path.Dir(cp.rootPath()))
+	cp.Context.Path["root_to_file"] = cty.StringVal(relativePath)
+
+	relativePath, _ = util.GetPathRelativeTo(path.Dir(cp.leafPath()), path.Dir(cp.rootPath()))
+	cp.Context.Path["root_to_leaf"] = cty.StringVal(relativePath)
+
 }
 
 func (cp *ConfigParser) ProcessIncludes() error {
