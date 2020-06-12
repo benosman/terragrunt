@@ -57,6 +57,7 @@ type configEvaluator struct {
 	configParser *ConfigParser
 	localVertices  map[string]variableVertex
 	localValues    map[string]cty.Value
+	paths          map[string]cty.Value
 }
 
 type EvaluationResult struct {
@@ -142,12 +143,7 @@ func (eval *configEvaluator) processEdges(validate bool) error {
 	}
 
 	if validate {
-		err = eval.globals.graph.Validate()
-		if err != nil {
-			return err
-		}
-
-		eval.globals.graph.TransitiveReduction()
+		err = eval.finalizeGraph()
 	}
 
 	return nil
@@ -196,17 +192,24 @@ func (eval *configEvaluator) evaluateVariable(vertex variableVertex, diags hcl.D
 		return true
 	}
 
-	valuesCty, err := eval.convertValuesToVariables()
+	extensions := eval.configParser.Context
+
+	localsAsCty, err := eval.getLocalsAsCty()
 	if err != nil {
-		// TODO: diags.Extend(??)
 		return false
 	}
 
-	ctx := hcl.EvalContext{
-		Variables: valuesCty,
+	globalsAsCty, err := eval.getGlobalsAsCty()
+	if err != nil {
+		return false
 	}
 
-	value, currentDiags := vertex.Expr.Value(&ctx)
+	extensions.Locals = &localsAsCty
+	extensions.Globals = &globalsAsCty
+
+	context := CreateTerragruntEvalContext(eval.configParser.Filename, eval.configParser.Options, extensions)
+
+	value, currentDiags := vertex.Expr.Value(context)
 	if currentDiags != nil && currentDiags.HasErrors() {
 		_ = diags.Extend(currentDiags)
 		return false
@@ -303,10 +306,7 @@ func (eval *configEvaluator) addEdges(target variableVertex) error {
 	variables := target.Expr.Variables()
 
 	if variables == nil || len(variables) <= 0 {
-		eval.globals.graph.Connect(&basicEdge{
-			S: eval.globals.root,
-			T: target,
-		})
+		// Not a variable (could be function) so return for now, we'll add a basic edge when finalizing the graph
 		return nil
 	}
 
@@ -339,8 +339,8 @@ func (eval *configEvaluator) addEdges(target variableVertex) error {
 				T: target,
 			})
 		default:
-			// TODO: error
-			return nil
+			// could be a path variable, so continue and we'll add a basic edge when finalizing the graph
+			continue
 		}
 	}
 
@@ -352,6 +352,14 @@ func getVariableRootAndName(variable hcl.Traversal) (string, string, error) {
 	sourceType := variable.RootName()
 	sourceName := variable[1].(hcl.TraverseAttr).Name
 	return sourceType, sourceName, nil
+}
+
+func (eval *configEvaluator) getLocalsAsCty() (cty.Value, error) {
+	return gocty.ToCtyValue(eval.localValues, generateTypeFromMap(eval.localValues))
+}
+
+func (eval *configEvaluator) getGlobalsAsCty() (cty.Value, error) {
+	return gocty.ToCtyValue(eval.globals.values, generateTypeFromMap(eval.globals.values))
 }
 
 func (eval *configEvaluator) convertValuesToVariables() (map[string]cty.Value, error) {
@@ -436,4 +444,29 @@ func generateTypeFromMap(value map[string]cty.Value) cty.Type {
 		typeMap[k] = v.Type()
 	}
 	return cty.Object(typeMap)
+}
+
+
+func (eval *configEvaluator) finalizeGraph() error {
+	// Connect the root to all the edges that need it
+	g := eval.globals.graph
+	for _, v := range g.Vertices() {
+		if v == eval.globals.root {
+			continue
+		}
+
+		if g.UpEdges(v).Len() == 0 {
+			g.Connect(dag.BasicEdge(eval.globals.root, v))
+		}
+
+	}
+
+	err := eval.globals.graph.Validate()
+	if err != nil {
+		return err
+	}
+
+	eval.globals.graph.TransitiveReduction()
+
+	return nil
 }
