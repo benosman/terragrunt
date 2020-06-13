@@ -151,6 +151,8 @@ func (cp *ConfigParser) SetPaths() {
 	cp.Context.Path["dir"] = cty.StringVal(path.Dir(cp.Filename))
 	cp.Context.Path["root"] = cty.StringVal(path.Dir(cp.rootPath()))
 	cp.Context.Path["root_file"] = cty.StringVal(cp.rootPath())
+	cp.Context.Path["leaf"] = cty.StringVal(path.Dir(cp.leafPath()))
+	cp.Context.Path["leaf_file"] = cty.StringVal(cp.leafPath())
 	cp.Context.Path["parent"] = cty.StringVal(path.Dir(cp.parentPath()))
 	cp.Context.Path["parent_file"] = cty.StringVal(cp.parentPath())
 	cp.Context.Path["parents"] = cp.GetParentPaths()
